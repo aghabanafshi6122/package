@@ -193,7 +193,7 @@ def get_ai_response(user_id, message, history, user_name=None, chat_type="privat
         response = requests.post(OPENROUTER_URL,
             headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"},
             json={
-                "model": "openai/gpt-4o-mini",
+                "model": "openrouter/free",
                 "messages": messages,
                 "temperature": 0.8,
                 "max_tokens": 500
