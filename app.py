@@ -1,10 +1,19 @@
 import os
 import json
+import time
+import threading
 import requests
-from datetime import datetime, timedelta
-from flask import Flask, request, jsonify
+from datetime import datetime
+from flask import Flask
 
+# ================================================
+# 🌐 Flask (فقط برای اینکه Railway پورت داشته باشه)
+# ================================================
 app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "🟡 Verity Bot is running (Long Polling)!"
 
 # ================================================
 # 🔑 توکن‌ها از متغیرهای محیطی
@@ -80,7 +89,7 @@ def get_offline_response(message=""):
 def api_request(method, data=None):
     try:
         url = f"{BASE_URL}/{method}"
-        response = requests.post(url, json=data or {}, timeout=15)
+        response = requests.post(url, json=data or {}, timeout=30)
         if response.status_code == 200:
             return response.json()
         else:
@@ -241,7 +250,6 @@ def process_message(chat_id, msg, data):
     
     print(f"👤 {user_name} ({sender_id}) - نوع چت: {chat_type}")
     
-    # ===== گروه =====
     if is_group:
         if "وریتی" not in text:
             return data
@@ -256,13 +264,9 @@ def process_message(chat_id, msg, data):
         send_message(chat_id, response)
         return data
     
-    # ===== چت خصوصی =====
     if not is_private:
         return data
     
-    print("💬 چت خصوصی")
-    
-    # ===== /start =====
     if text == "/start":
         welcome = """سلام من وریتی هستم. هرچی میخوای ازم بپرس من همه چیزو میدونم 🟡
 
@@ -280,7 +284,6 @@ def process_message(chat_id, msg, data):
         send_message(chat_id, welcome)
         return data
     
-    # ===== راهنما =====
     if text == "/help" or "راهنما" in text:
         help_text = """🟡 **راهنمای وریتی**
 
@@ -299,7 +302,6 @@ def process_message(chat_id, msg, data):
         send_message(chat_id, help_text)
         return data
     
-    # ===== پاک کردن =====
     if "پاک کردن" in text:
         if str(sender_id) in data.get("chat_history", {}):
             data["chat_history"][str(sender_id)] = []
@@ -309,7 +311,6 @@ def process_message(chat_id, msg, data):
             send_message(chat_id, "📭 هیچ تاریخچه‌ای نداری!")
         return data
     
-    # ===== پاسخ =====
     history = data.get("chat_history", {})
     response = get_ai_response(sender_id, text, history, user_name, "private")
     data["chat_history"] = history
@@ -319,58 +320,57 @@ def process_message(chat_id, msg, data):
     return data
 
 # ================================================
-# 🌐 Webhook Flask
+# 🔄 حلقه Long Polling
 # ================================================
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    try:
-        update = request.json
-        data = load_data()
-        
-        if 'message' in update:
-            msg = update['message']
-            chat_id = msg.get('chat', {}).get('id')
-            data = process_message(chat_id, msg, data)
-        
-        return jsonify({"ok": True})
-    except Exception as e:
-        print(f"❌ Error: {e}")
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-@app.route('/', methods=['GET'])
-def home():
-    return "🟡 Verity Bot (Yellow Ball) is running!"
-
-# ================================================
-# 🚀 تنظیم Webhook در بله
-# ================================================
-def set_webhook():
-    railway_url = os.getenv("RAILWAY_STATIC_URL")
-    if not railway_url:
-        print("⚠️ RAILWAY_STATIC_URL تنظیم نشده!")
-        return
+def polling_loop():
+    print("🔄 حذف Webhook قدیمی...")
+    api_request("deleteWebhook")
     
-    webhook_url = f"https://{railway_url}/webhook"
-    response = api_request("setWebhook", {"url": webhook_url})
+    print("🟢 Long Polling شروع شد...")
+    data = load_data()
+    last_update_id = 0
     
-    if response and response.get('ok'):
-        print(f"✅ Webhook تنظیم شد: {webhook_url}")
-    else:
-        print(f"❌ خطا در تنظیم Webhook: {response}")
+    while True:
+        try:
+            offset = last_update_id + 1 if last_update_id else None
+            payload = {"offset": offset, "timeout": 30} if offset else {"timeout": 30}
+            
+            result = api_request("getUpdates", payload)
+            
+            if result and result.get('ok'):
+                updates = result.get('result', [])
+                
+                for update in updates:
+                    update_id = update.get('update_id', 0)
+                    if update_id > last_update_id:
+                        last_update_id = update_id
+                    
+                    if 'message' in update:
+                        msg = update['message']
+                        chat_id = msg.get('chat', {}).get('id')
+                        if chat_id:
+                            data = process_message(chat_id, msg, data)
+            
+            time.sleep(1)
+            
+        except Exception as e:
+            print(f"❌ Polling Error: {e}")
+            time.sleep(5)
 
 # ================================================
 # 🚀 اجرا
 # ================================================
 if __name__ == "__main__":
     print("=" * 55)
-    print("🟡 ربات وریتی - توپ زرد بامزه (Webhook)")
+    print("🟡 ربات وریتی - توپ زرد بامزه (Long Polling)")
     print(f"👑 سازنده: {CREATOR}")
-    print("📌 گروه: با کلمه کلیدی 'وریتی'")
-    print("💬 خصوصی: بدون نیاز به کلمه کلیدی")
-    print("🔮 می‌داند ۳ روز دیگه چی میشه!")
     print("=" * 55)
     
-    set_webhook()
+    # ربات رو در thread جداگانه اجرا کن
+    bot_thread = threading.Thread(target=polling_loop, daemon=True)
+    bot_thread.start()
     
+    # Flask رو برای Railway بالا بیار
     port = int(os.getenv("PORT", 8080))
+    print(f"🌐 Flask روی پورت {port}")
     app.run(host='0.0.0.0', port=port)
